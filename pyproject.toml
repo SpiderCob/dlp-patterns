@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dlp-patterns"
+version = "0.1.0"
+description = "Fast, zero-dependency DLP pattern scanner — detects PII, secrets, and sensitive data in text"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.9"
+keywords = [
+    "dlp", "data-loss-prevention", "pii", "secrets", "security",
+    "regex", "privacy", "compliance", "gdpr", "hipaa", "pci-dss",
+    "redaction", "sensitive-data", "secret-scanning",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Text Processing",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = []  # zero required dependencies
+
+[project.optional-dependencies]
+fuzz = ["faker>=20.0"]
+dev  = ["pytest>=7", "faker>=20.0"]
+
+[project.urls]
+Homepage    = "https://spidercob.com"
+Repository  = "https://github.com/spidercob/dlp-patterns"
+"Bug Tracker" = "https://github.com/spidercob/dlp-patterns/issues"
+
+[project.scripts]
+dlp-scan = "dlp_patterns.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dlp_patterns"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/", "tests/", "README.md", "LICENSE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
