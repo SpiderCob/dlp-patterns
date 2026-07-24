@@ -117,6 +117,18 @@ dlp-scan --secrets-only . && echo "clean"
 
 ### Use in CI (GitHub Actions)
 
+The easiest way is the official [dlp-scan-action](https://github.com/SpiderCob/dlp-scan-action):
+
+```yaml
+- name: DLP Secret Scan
+  uses: spidercob/dlp-scan-action@v1
+  with:
+    secrets-only: 'true'
+    fail-on: 'critical'
+```
+
+Or run the CLI directly:
+
 ```yaml
 - name: DLP secret scan
   run: |
