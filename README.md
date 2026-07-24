@@ -115,6 +115,23 @@ dlp-scan --secrets-only src/config.py
 dlp-scan --secrets-only . && echo "clean"
 ```
 
+### Pre-commit hook
+
+Block commits containing secrets automatically using [dlp-pre-commit](https://github.com/SpiderCob/dlp-pre-commit):
+
+```yaml
+repos:
+  - repo: https://github.com/SpiderCob/dlp-pre-commit
+    rev: v1.0.0
+    hooks:
+      - id: dlp-scan-secrets-only
+```
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
 ### Use in CI (GitHub Actions)
 
 The easiest way is the official [dlp-scan-action](https://github.com/SpiderCob/dlp-scan-action):
