@@ -20,7 +20,7 @@ Full docs: https://github.com/spidercob/dlp-patterns
 
 from dlp_patterns._engine import Scanner, ScanResult, Finding
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = ["scan", "redact", "fuzz", "Scanner", "ScanResult", "Finding", "__version__"]
 
 _default = Scanner()

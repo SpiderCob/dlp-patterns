@@ -99,13 +99,16 @@ dlp-scan "My SSN is 432-78-9012"
 # Scan a file
 dlp-scan path/to/document.txt
 
+# Scan a directory recursively
+dlp-scan path/to/project/
+
 # Pipe from stdin
 cat logfile.txt | dlp-scan
 
 # JSON output
 dlp-scan --json document.txt
 
-# Redact in place
+# Redact in place (files only, not directories)
 dlp-scan --redact document.txt > clean.txt
 
 # Secrets only (for source code)
@@ -114,6 +117,33 @@ dlp-scan --secrets-only src/config.py
 # Exit code: 1 if CRITICAL findings, 0 otherwise — useful in CI
 dlp-scan --secrets-only . && echo "clean"
 ```
+
+#### Directory scanning
+
+`dlp-scan <directory>` walks recursively and scans every text file it finds.
+It automatically skips:
+
+- Version control and vendor directories: `.git`, `node_modules`, `__pycache__`, `.venv`, `venv`, `dist`, `build`, `.mypy_cache`, `.pytest_cache`, `.tox`
+- Lockfiles (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `poetry.lock`, `Pipfile.lock`, `go.sum`, `composer.lock`, `npm-shrinkwrap.json`) — these are auto-generated and full of base64 integrity hashes that false-positive against secret regexes
+- Binary files (detected by a null-byte sniff on the first 8KB)
+
+`--json` output for a directory scan has a different shape than a single-file scan — findings are grouped by file:
+
+```json
+{
+  "mode": "directory",
+  "path": "src/",
+  "files_scanned": 42,
+  "files_with_findings": 2,
+  "highest_severity": "CRITICAL",
+  "findings_by_file": {
+    "config.py": { "CRITICAL": [...], "HIGH": [], "MEDIUM": [], "LOW": [], "INFO": [], "elapsed_ms": 1.2 }
+  },
+  "elapsed_ms": 38.4
+}
+```
+
+Exit code is still `1` if any file has a CRITICAL finding, `0` otherwise.
 
 ### Pre-commit hook
 

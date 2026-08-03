@@ -1,4 +1,8 @@
 """Tests for dlp-patterns."""
+import json
+import subprocess
+import sys
+
 import pytest
 import dlp_patterns
 from dlp_patterns import Scanner, ScanResult
@@ -269,4 +273,85 @@ def test_low_entropy_secret_rejected():
     assert not any(f.type == "aws_secret_key" for f in r.all)
 
 def test_version_exported():
-    assert dlp_patterns.__version__ == "0.1.0"
+    assert dlp_patterns.__version__ == "0.2.0"
+
+
+# ── CLI: directory scanning ─────────────────────────────────────────────────
+
+def _run_cli(*args):
+    return subprocess.run(
+        [sys.executable, "-m", "dlp_patterns", *args],
+        capture_output=True, text=True,
+    )
+
+
+def test_cli_directory_finds_secret_in_nested_file(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "config.py").write_text('AWS_KEY = "AKIAIOSFODNN7EXAMPLE"')
+    (tmp_path / "src" / "clean.py").write_text('print("hello")')
+
+    result = _run_cli("--secrets-only", "--json", str(tmp_path))
+    data = json.loads(result.stdout)
+
+    assert result.returncode == 1
+    assert data["mode"] == "directory"
+    assert data["files_scanned"] == 2
+    assert data["highest_severity"] == "CRITICAL"
+    assert "src/config.py" in data["findings_by_file"]
+    assert "src/clean.py" not in data["findings_by_file"]
+
+
+def test_cli_directory_skips_lockfiles(tmp_path):
+    # package-lock.json integrity hashes false-positive against secret
+    # regexes (base64-looking strings) — must be skipped, not flagged.
+    (tmp_path / "package-lock.json").write_text(
+        '{"integrity": "sha512-UrcABB+4bUrFABwbluTIBErXwvbsU/V7TZWfmbgJfbkwiBuziS9gxdODUyuiecfdGQ85jglMW6juS3+z5TsKLw=="}'
+    )
+    result = _run_cli("--secrets-only", "--json", str(tmp_path))
+    data = json.loads(result.stdout)
+
+    assert result.returncode == 0
+    assert data["files_scanned"] == 0
+    assert data["findings_by_file"] == {}
+
+
+def test_cli_directory_skips_common_vendor_dirs(tmp_path):
+    (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
+    (tmp_path / "node_modules" / "pkg" / "index.js").write_text('AWS_KEY = "AKIAIOSFODNN7EXAMPLE"')
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text('AWS_KEY = "AKIAIOSFODNN7EXAMPLE"')
+
+    result = _run_cli("--secrets-only", "--json", str(tmp_path))
+    data = json.loads(result.stdout)
+
+    assert result.returncode == 0
+    assert data["files_scanned"] == 0
+
+
+def test_cli_directory_skips_binary_files(tmp_path):
+    (tmp_path / "binary.bin").write_bytes(b"\x00\x01\x02AKIAIOSFODNN7EXAMPLE")
+    result = _run_cli("--secrets-only", "--json", str(tmp_path))
+    data = json.loads(result.stdout)
+
+    assert result.returncode == 0
+    assert data["files_scanned"] == 0
+
+
+def test_cli_directory_clean_exits_zero(tmp_path):
+    (tmp_path / "a.py").write_text('print("nothing sensitive")')
+    result = _run_cli("--secrets-only", str(tmp_path))
+    assert result.returncode == 0
+    assert "No findings" in result.stdout
+
+
+def test_cli_redact_rejects_directory(tmp_path):
+    result = _run_cli("--redact", str(tmp_path))
+    assert result.returncode == 2
+
+
+def test_cli_single_file_still_works(tmp_path):
+    f = tmp_path / "config.py"
+    f.write_text('AWS_KEY = "AKIAIOSFODNN7EXAMPLE"')
+    result = _run_cli("--secrets-only", str(f))
+    assert result.returncode == 1
+    assert "aws_access_key" in result.stdout
