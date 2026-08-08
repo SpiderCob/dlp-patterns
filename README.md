@@ -48,6 +48,8 @@ No external dependencies. Python 3.9+.
 - **`secrets_only` mode** — Scan just for API keys and credentials, skipping PII. Faster for CI/CD secret scanning.
 - **`redact()`** — Replace all findings with `[REDACTED: <type>]`.
 - **`fuzz()`** — Replace findings with realistic fake values (requires `faker`). Useful for building safe test datasets from production data.
+- **Git history scanning** — `dlp-scan --history` walks every commit, not just the working tree, so a secret that was committed and later deleted still gets caught. See [Git history scanning](#git-history-scanning).
+- **Live secret verification** — `dlp-scan --verify` checks whether a found secret is still active by making a real, read-only call to its own provider's API. See [Live secret verification](#live-secret-verification).
 - **CLI** — `dlp-scan` command for shell pipelines and CI.
 
 ## Usage
@@ -76,6 +78,7 @@ f.position                   # "char 10-29"
 f.context                    # surrounding text (±100 chars)
 f.context_score              # float 0.0–1.0
 f.context_keywords_found     # ["payment", "billing"]
+f.verification                # None until dlp_patterns.verify() is called
 
 # Secrets only (faster for source code scanning)
 result = dlp_patterns.scan(code, secrets_only=True)
@@ -144,6 +147,118 @@ It automatically skips:
 ```
 
 Exit code is still `1` if any file has a CRITICAL finding, `0` otherwise.
+
+### Git history scanning
+
+Deleting a leaked key from HEAD does not un-leak it — anyone with a clone of
+the repo (including one taken before the deletion) can still read it out of
+`git log -p`. This is the single most common way real secrets leak, and
+plain `dlp-scan <directory>` mode can't see it: it walks the *working tree*
+and explicitly skips `.git`. `--history` walks every commit on every branch
+instead:
+
+```bash
+# Scan full history of the repo at (or containing) the given path
+dlp-scan --history path/to/repo
+
+# Defaults to the current directory
+dlp-scan --history
+
+# Limit to the N most recent commits
+dlp-scan --history --max-commits 500 .
+
+# --history defaults to secrets only (PII noise across full history is
+# high — every email/phone number ever committed, including test fixtures).
+# Opt into PII scanning too:
+dlp-scan --history --full-scan .
+
+dlp-scan --history --json . | tee history-report.json
+```
+
+Only lines *added* in a commit's diff are scanned, once per commit that
+introduced them — sufficient and non-redundant, since a line later removed
+was necessarily added by some earlier commit. Requires the `git` binary on
+PATH (an external tool dependency, not a pip package — this library still
+ships with zero pip-installable dependencies).
+
+Each finding carries the commit it was introduced in:
+
+```json
+{
+  "type": "aws_access_key",
+  "severity": "CRITICAL",
+  "value": "AKIAIOSFOD...",
+  "commit": "<full 40-char SHA>",
+  "short_commit": "b874554",
+  "author": "Jane Doe <jane@example.com>",
+  "date": "2026-08-06T09:46:52+05:30",
+  "subject": "add key",
+  "file": "config.py"
+}
+```
+
+This only *detects* — it intentionally does not try to rewrite history or
+force-push a fix. Purging a secret from history for real (`git filter-repo`
++ a coordinated force-push + rotating the credential) is a separate,
+higher-stakes operation you should do deliberately, not something a scanner
+should do for you.
+
+### Live secret verification
+
+Regex matching alone can't tell a live production key from one that's
+already been rotated. `--verify` closes that gap for a curated set of
+secret types by making one real, read-only API call per distinct secret —
+"who am I" / "list my scopes", never an action — to confirm whether it
+still authenticates:
+
+```bash
+dlp-scan --verify --secrets-only src/config.py
+dlp-scan --verify --history .          # combine with history scanning
+dlp-scan --verify --verify-timeout 8 . # per-secret network timeout (default 4s)
+```
+
+```
+[CRITICAL]
+  github_token                   GitHub Personal Access Token
+                                  value=ghp_9a...***  pos=char 15-55
+                                  verify=INVALID (GitHub API rejected the token (401))
+```
+
+**Opt-in only** — never runs from a plain `dlp-scan`/`scan()` call, and the
+CLI prints a warning the first time `--verify` fires. It's off by default
+because it makes real network requests using the extracted secret value.
+
+**What's checked:** GitHub PATs, Slack tokens, Stripe (secret/restricted)
+keys, SendGrid, HuggingFace, npm, Google API keys, Telegram bot tokens,
+Mailgun, and Cloudflare API tokens.
+
+**What's deliberately *not* checked, and why:**
+- **Slack/Discord webhook URLs** — "verifying" a webhook means POSTing to
+  it, which sends a real message to someone's channel. That's a side
+  effect, not a check, so it's never attempted.
+- **AWS access/secret keys, Twilio SID/auth token** — verifying these needs
+  two independently-matched findings paired together (an access key *and*
+  its secret; an account SID *and* its auth token), which this scanner
+  doesn't yet correlate. Reported as `unverifiable` rather than guessed.
+- A network error (timeout, DNS failure) is always reported as `error`,
+  never collapsed into `invalid` — not knowing is not the same as revoked.
+
+Same `verify=` line appears in directory and `--history` output. In
+directory/history mode, an identical secret found in multiple files or
+commits is checked against its provider **once**, not once per occurrence.
+
+Python API:
+
+```python
+import dlp_patterns
+
+result = dlp_patterns.scan(code, secrets_only=True)
+dlp_patterns.verify(result)  # mutates findings in place
+
+for f in result.all:
+    if f.verification:
+        print(f.type, f.verification.status, f.verification.detail)
+```
 
 ### Pre-commit hook
 

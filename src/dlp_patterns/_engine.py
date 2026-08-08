@@ -34,9 +34,17 @@ class Finding:
     context_score: float
     context_score_reasons: List[str] = field(default_factory=list)
     context_keywords_found: List[str] = field(default_factory=list)
+    # Unmasked matched text. Kept off of repr() and out of to_dict() on
+    # purpose — this exists only so an explicit, opt-in verification pass
+    # (see dlp_patterns._verify) has something to check against. Nothing in
+    # this package ever prints, logs, or serializes `raw` on its own.
+    raw: str = field(default="", repr=False, compare=False)
+    # Populated only when a verification pass has actually run (see
+    # dlp_patterns.verify / --verify). None means "not checked", not "safe".
+    verification: Optional["object"] = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "type": self.type,
             "description": self.description,
             "value": self.value,
@@ -47,6 +55,9 @@ class Finding:
             "context_score_reasons": self.context_score_reasons,
             "context_keywords_found": self.context_keywords_found,
         }
+        if self.verification is not None:
+            d["verification"] = self.verification.to_dict()
+        return d
 
 
 @dataclass
@@ -606,6 +617,7 @@ class Scanner:
                     context=ctx_raw,
                     context_score=ctx_score,
                     context_score_reasons=ctx_reasons,
+                    raw=raw,
                 )
 
                 # Gate 3 — required context keywords

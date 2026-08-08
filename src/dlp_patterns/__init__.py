@@ -19,9 +19,21 @@ Full docs: https://github.com/spidercob/dlp-patterns
 """
 
 from dlp_patterns._engine import Scanner, ScanResult, Finding
+from dlp_patterns._verify import VerificationResult, verify_findings, verify_value
+from dlp_patterns._history import (
+    scan_git_history, HistoryScanResult, HistoryFinding,
+    NotAGitRepoError, GitNotFoundError,
+)
 
-__version__ = "0.2.0"
-__all__ = ["scan", "redact", "fuzz", "Scanner", "ScanResult", "Finding", "__version__"]
+__version__ = "0.3.0"
+__all__ = [
+    "scan", "redact", "fuzz", "verify",
+    "Scanner", "ScanResult", "Finding",
+    "verify_findings", "verify_value", "VerificationResult",
+    "scan_git_history", "HistoryScanResult", "HistoryFinding",
+    "NotAGitRepoError", "GitNotFoundError",
+    "__version__",
+]
 
 _default = Scanner()
 
@@ -66,6 +78,28 @@ def redact(text: str) -> str:
     'Call me at [REDACTED: US Phone Number]'
     """
     return _default.redact(text)
+
+
+def verify(result: ScanResult, *, timeout: float = 4.0) -> ScanResult:
+    """
+    Run live verification against each secret-shaped finding in *result*,
+    in place, and return it. Opt-in only — never called by :func:`scan`.
+
+    Makes a real, read-only network request per distinct secret to its
+    provider's API (e.g. GitHub, Slack, Stripe) to confirm whether it's
+    still active. See :mod:`dlp_patterns._verify` for exactly which secret
+    types are supported and why (only ones with a safe, side-effect-free
+    check — no webhook URLs, for instance).
+
+    Examples
+    --------
+    >>> r = dlp_patterns.scan("ghp_" + "x" * 36, secrets_only=True)  # doctest: +SKIP
+    >>> dlp_patterns.verify(r)  # doctest: +SKIP
+    >>> r.critical[0].verification.status  # doctest: +SKIP
+    'invalid'
+    """
+    verify_findings(result.all, timeout=timeout)
+    return result
 
 
 def fuzz(text: str) -> str:

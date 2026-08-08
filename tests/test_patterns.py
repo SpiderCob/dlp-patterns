@@ -273,7 +273,7 @@ def test_low_entropy_secret_rejected():
     assert not any(f.type == "aws_secret_key" for f in r.all)
 
 def test_version_exported():
-    assert dlp_patterns.__version__ == "0.2.0"
+    assert dlp_patterns.__version__ == "0.3.0"
 
 
 # ── CLI: directory scanning ─────────────────────────────────────────────────
