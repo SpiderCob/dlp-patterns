@@ -19,6 +19,7 @@ import sys
 
 from dlp_patterns import scan, redact, __version__
 from dlp_patterns._verify import verify_findings
+from dlp_patterns._pairing import pair_and_verify
 
 # Auto-generated files that are never a realistic place for a real leaked
 # credential, but routinely false-positive against secret regexes (e.g. AWS
@@ -52,7 +53,8 @@ def main() -> None:
                          help="With --history, also scan for PII, not just secrets (off by default — PII noise across full history is high)")
     parser.add_argument("--verify", action="store_true",
                          help="Attempt live verification of found secrets against their provider's API (opt-in — makes real "
-                              "network requests; see README for exactly what this does and doesn't send)")
+                              "network requests; see README for exactly what this does and doesn't send). AWS access/secret "
+                              "keys and Twilio SID/auth-tokens found near each other are paired and verified together.")
     parser.add_argument("--verify-timeout", type=float, default=4.0, help="Per-secret network timeout in seconds for --verify (default: 4.0)")
     parser.add_argument("--min-confidence", type=float, default=0.0, dest="min_confidence",
                          help="Only fail the exit code for CRITICAL findings whose context_score is >= this value "
@@ -90,6 +92,9 @@ def main() -> None:
     result = scan(text, secrets_only=args.secrets_only)
 
     if args.verify:
+        # Pair AWS access/secret keys and Twilio SID/auth-tokens first — safe
+        # here because every finding in result.all comes from the same text.
+        pair_and_verify(result.all, timeout=args.verify_timeout)
         _verify_cli(result.all, args)
 
     if args.as_json:
@@ -131,9 +136,10 @@ def _verify_cli(findings: list, args: argparse.Namespace) -> None:
     if not _VERIFY_WARNED:
         print(
             "warning: --verify makes a live, read-only API call per secret to its own "
-            "provider (GitHub, Slack, Stripe, ...) to confirm whether it's still active. "
-            "Only requests that credential's own provider would normally receive are sent — "
-            "see the dlp-patterns README for the exact list of what's checked and how.",
+            "provider (GitHub, Slack, Stripe, AWS STS, Twilio, ...) to confirm whether it's "
+            "still active. Only requests that credential's own provider would normally "
+            "receive are sent — see the dlp-patterns README for the exact list of what's "
+            "checked and how.",
             file=sys.stderr,
         )
         _VERIFY_WARNED = True
@@ -189,10 +195,19 @@ def _scan_directory(root: str, args: argparse.Namespace) -> None:
             if _has_blocking_critical(result.critical, args.min_confidence):
                 has_blocking = True
 
+            if args.verify:
+                # Pairing must run per-file, not on a pooled cross-file list:
+                # Finding.position offsets are only comparable within the
+                # same source text, and pairing an access key from one file
+                # with an unrelated secret key from another would be
+                # silently wrong. The plain per-value verify pass below is
+                # still pooled across all files for network-call dedup.
+                pair_and_verify(result.all, timeout=args.verify_timeout)
+
     if args.verify and results_by_file:
-        # One pooled verify pass across every file — an identical secret
-        # repeated across many files is checked against its provider once,
-        # not once per file it happens to appear in.
+        # One pooled verify pass across every file for everything pairing
+        # didn't already resolve — an identical secret repeated across many
+        # files is checked against its provider once, not once per file.
         all_findings = [f for result in results_by_file.values() for f in result.all]
         _verify_cli(all_findings, args)
 
@@ -266,6 +281,18 @@ def _scan_history(repo_path: str, args: argparse.Namespace) -> None:
         sys.exit(2)
 
     if args.verify and result.has_findings:
+        # Pairing must run per (commit, file), not on the flat cross-commit
+        # list result.findings is — same reasoning as directory mode above:
+        # Finding.position is only comparable within one source text (here,
+        # one commit's diff of one file), so pairing across that boundary
+        # risks matching an access key from one commit to an unrelated
+        # secret key from another.
+        by_scope: "dict[tuple[str, str], list]" = {}
+        for hf in result.findings:
+            by_scope.setdefault((hf.commit, hf.file), []).append(hf.finding)
+        for scope_findings in by_scope.values():
+            pair_and_verify(scope_findings, timeout=args.verify_timeout)
+
         _verify_cli([hf.finding for hf in result.findings], args)
 
     has_blocking = _has_blocking_critical((hf.finding for hf in result.findings), args.min_confidence)

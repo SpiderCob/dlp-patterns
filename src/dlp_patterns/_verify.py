@@ -20,16 +20,19 @@ Design rules — read before adding a verifier:
    is itself an action a live secret could actually cause — this is why
    Slack/Discord *webhook* URLs are deliberately not verified: POSTing to a
    webhook sends a real message to someone's channel, which is not a check,
-   it's a side effect. Same reasoning kept AWS/Twilio out for now: verifying
-   either needs correlating two independently-matched findings (access key +
-   secret key; account SID + auth token) that this scanner does not yet
-   pair up, and guessing the pairing wrong risks trying real API calls
-   against a mismatched value.
+   it's a side effect.
 3. **A network error is not "invalid".** A timeout or DNS failure means we
    don't know — it goes in the "error" bucket, never "invalid". Only an
    explicit auth rejection from the provider counts as invalid.
 4. Zero third-party dependencies — `urllib.request` from the standard
    library only, matching the rest of this package.
+
+AWS access/secret keys and Twilio SID/auth-tokens need a *second*,
+independently-matched finding to verify at all (the secret half of the
+pair) — see `_pairing.py` for that, called separately by the CLI before
+`verify_findings()` runs. Anything `_pairing.py` couldn't find a partner
+for still gets an explicit "unverifiable" verdict from this module (rule
+2's whole point: never leave "was this checked?" ambiguous).
 """
 from __future__ import annotations
 
@@ -263,12 +266,26 @@ _ANNOTATE_TYPES = frozenset(_VERIFIERS) | {
 }
 
 
+# Types that need a paired second finding (see _pairing.py) rather than a
+# plain per-value verifier — give these a more specific "unverifiable"
+# reason than the generic one when no pairing was possible.
+_PAIRED_TYPES = frozenset({
+    "aws_access_key", "aws_secret_key", "aws_session_token",
+    "twilio_account_sid", "twilio_auth_token",
+})
+
+
 def verify_value(finding_type: str, value: str, *, timeout: float = _DEFAULT_TIMEOUT) -> VerificationResult:
     """Run a live check for a single (type, raw value) pair."""
     if not value:
         return _unverifiable("no raw value captured to verify")
     verifier = _VERIFIERS.get(finding_type)
     if verifier is None:
+        if finding_type in _PAIRED_TYPES:
+            return _unverifiable(
+                f"no matching paired finding found nearby to verify this '{finding_type}' with "
+                "(see dlp_patterns.pair_and_verify — run automatically by the CLI's --verify)"
+            )
         return _unverifiable(f"no live verifier implemented for '{finding_type}'")
     return verifier(value, timeout)
 
@@ -286,9 +303,12 @@ def verify_findings(findings: List, *, timeout: float = _DEFAULT_TIMEOUT, max_wo
 
     Findings that aren't secret-shaped (PII, keywords, etc.) are left
     untouched (``verification`` stays ``None``) so they don't clutter
-    ``--verify`` output with an irrelevant "unverifiable".
+    ``--verify`` output with an irrelevant "unverifiable". Findings that
+    already have ``verification`` set — e.g. by
+    :func:`dlp_patterns.pair_and_verify` running first on AWS/Twilio pairs —
+    are left as-is rather than overwritten with a generic verdict.
     """
-    candidates = [f for f in findings if f.type in _ANNOTATE_TYPES]
+    candidates = [f for f in findings if f.type in _ANNOTATE_TYPES and f.verification is None]
     if not candidates:
         return
 

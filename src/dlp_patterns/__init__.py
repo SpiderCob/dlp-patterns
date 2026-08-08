@@ -20,16 +20,17 @@ Full docs: https://github.com/spidercob/dlp-patterns
 
 from dlp_patterns._engine import Scanner, ScanResult, Finding
 from dlp_patterns._verify import VerificationResult, verify_findings, verify_value
+from dlp_patterns._pairing import pair_and_verify
 from dlp_patterns._history import (
     scan_git_history, HistoryScanResult, HistoryFinding,
     NotAGitRepoError, GitNotFoundError,
 )
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __all__ = [
     "scan", "redact", "fuzz", "verify",
     "Scanner", "ScanResult", "Finding",
-    "verify_findings", "verify_value", "VerificationResult",
+    "verify_findings", "verify_value", "VerificationResult", "pair_and_verify",
     "scan_git_history", "HistoryScanResult", "HistoryFinding",
     "NotAGitRepoError", "GitNotFoundError",
     "__version__",
@@ -91,6 +92,11 @@ def verify(result: ScanResult, *, timeout: float = 4.0) -> ScanResult:
     types are supported and why (only ones with a safe, side-effect-free
     check — no webhook URLs, for instance).
 
+    AWS access/secret keys and Twilio SID/auth-token pairs within *result*
+    are paired up and verified together first (see
+    :func:`pair_and_verify`) — safe here because every finding in one
+    ScanResult necessarily comes from the same source text.
+
     Examples
     --------
     >>> r = dlp_patterns.scan("ghp_" + "x" * 36, secrets_only=True)  # doctest: +SKIP
@@ -98,6 +104,7 @@ def verify(result: ScanResult, *, timeout: float = 4.0) -> ScanResult:
     >>> r.critical[0].verification.status  # doctest: +SKIP
     'invalid'
     """
+    pair_and_verify(result.all, timeout=timeout)
     verify_findings(result.all, timeout=timeout)
     return result
 

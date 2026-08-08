@@ -128,8 +128,8 @@ class Scanner:
             "bearer_token", "jwt_token", "db_connection_string", "password_in_code",
             "slack_api_token", "google_api_key", "aws_session_token",
             "stripe_secret_key", "stripe_publishable_key", "stripe_restricted_key",
-            "sendgrid_api_key", "twilio_auth_token", "huggingface_token",
-            "npm_access_token", "cloudflare_api_token",
+            "sendgrid_api_key", "twilio_auth_token", "twilio_account_sid",
+            "huggingface_token", "npm_access_token", "cloudflare_api_token",
         }
 
     # ── Pattern registry ──────────────────────────────────────────────────────
@@ -334,6 +334,12 @@ class Scanner:
             description="Stripe Restricted Key",
             context_keywords=["stripe", "restricted"],
         )
+        # In _secret_types (below) even though a SID alone isn't secret —
+        # Twilio's actual secret is the paired auth token, but --verify's
+        # AWS/Twilio pairing (dlp_patterns._pairing) needs the SID to be
+        # found at all. Excluding it from secrets_only scans would mean a
+        # leaked auth token could never be verified in the one CLI mode
+        # (--secrets-only) most CI usage actually runs.
         p["twilio_account_sid"] = dict(
             pattern=r'\b(AC[a-f0-9]{32})\b', severity="HIGH",
             description="Twilio Account SID",
@@ -591,7 +597,23 @@ class Scanner:
                 continue
 
             for m in re.finditer(info["pattern"], text, re.IGNORECASE):
-                raw = m.group(0)
+                # Prefer the capturing group over the whole match: several
+                # patterns (bearer_token, twilio_auth_token, generic_api_key,
+                # password_in_code) match a literal label/prefix — "Bearer ",
+                # "TWILIO_AUTH_TOKEN=" — around the secret itself, and
+                # m.group(0) is that whole span, prefix included. Using it
+                # as `raw` meant the masked value shown to users was
+                # "Bearer...***" instead of a piece of the actual token, and
+                # anything that verifies the raw value (dlp_patterns.verify,
+                # AWS/Twilio pairing) would have sent the label text to the
+                # provider along with — or instead of — the real secret.
+                # `m.lastindex` is None for patterns with no capturing group
+                # (or only non-capturing `(?:...)` groups) — group(0) is
+                # correct there, since the whole match already *is* the
+                # value with nothing extra attached (aws_access_key,
+                # db_connection_string, PEM headers, ...).
+                grp = 1 if m.lastindex else 0
+                raw = m.group(grp)
 
                 # Gate 1 — custom validator
                 validator: Optional[Callable] = info.get("validator")
@@ -604,22 +626,22 @@ class Scanner:
                         continue
                     if len(raw) >= _MIN_ENTROPY_LEN:
                         threshold = (
-                            _COMMENT_PENALTY if self._in_code_comment(text, m.start())
+                            _COMMENT_PENALTY if self._in_code_comment(text, m.start(grp))
                             else _ENTROPY_THRESHOLD
                         )
                         if self._max_window_entropy(raw) < threshold:
                             continue
 
                 # Context
-                ctx_raw = text[max(0, m.start() - 100): min(len(text), m.end() + 100)]
-                ww = self._word_window(text, m.start(), m.end())
+                ctx_raw = text[max(0, m.start(grp) - 100): min(len(text), m.end(grp) + 100)]
+                ww = self._word_window(text, m.start(grp), m.end(grp))
                 ctx_score, ctx_reasons = self._score_context(name, ww)
 
                 finding = Finding(
                     type=name,
                     description=info["description"],
                     value=self._mask(raw, name),
-                    position=f"char {m.start()}-{m.end()}",
+                    position=f"char {m.start(grp)}-{m.end(grp)}",
                     severity=info["severity"],
                     context=ctx_raw,
                     context_score=ctx_score,

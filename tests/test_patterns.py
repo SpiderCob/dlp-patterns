@@ -274,7 +274,7 @@ def test_low_entropy_secret_rejected():
     assert not any(f.type == "aws_secret_key" for f in r.all)
 
 def test_version_exported():
-    assert dlp_patterns.__version__ == "0.3.0"
+    assert dlp_patterns.__version__ == "0.4.0"
 
 
 # ── CLI: directory scanning ─────────────────────────────────────────────────
@@ -378,6 +378,46 @@ def test_bearer_token_real_length_still_flagged(scanner):
     token = "sk_live_" + "9aB3cD4eF5gH6iJ7kL8mN9oP0qR1sT2uV3wX"
     r = scanner.scan("Authorization: Bearer " + token)
     assert any(f.type == "bearer_token" for f in r.critical)
+
+
+# ── raw/value use the capturing group, not the whole match ──────────────────
+# A handful of patterns match a literal label around the secret itself
+# ("Bearer ", "TWILIO_AUTH_TOKEN=", "api_key="). Using m.group(0) (the whole
+# match, label included) as the value meant --verify would send the label
+# text to the provider along with the real secret, and the masked `value`
+# shown to users was junk like "Bearer...***" instead of a piece of the
+# actual token.
+
+def test_bearer_token_value_excludes_the_label(scanner):
+    token = "sk_live_" + "9aB3cD4eF5gH6iJ7kL8mN9oP0qR1sT2uV3wX"
+    r = scanner.scan("Authorization: Bearer " + token, secrets_only=True)
+    f = next(x for x in r.critical if x.type == "bearer_token")
+    assert f.raw == token
+    assert not f.raw.startswith("Bearer")
+    assert not f.value.startswith("Bearer")
+
+def test_twilio_auth_token_value_excludes_the_label(scanner):
+    token = "0123456789abcdef0123456789abcdef"
+    r = scanner.scan(f"TWILIO_AUTH_TOKEN={token}", secrets_only=True)
+    f = next(x for x in r.critical if x.type == "twilio_auth_token")
+    assert f.raw == token
+    assert "TWILIO_AUTH_TOKEN" not in f.raw
+
+def test_generic_api_key_value_excludes_the_label(scanner):
+    value = "9aB3cD4eF5gH6iJ7kL8mN9oP0" + "qR1sT2uV3wXyZ01"
+    r = scanner.scan(f'api_key = "{value}"', secrets_only=True)
+    f = next(x for x in r.critical if x.type == "generic_api_key")
+    assert f.raw == value
+
+def test_aws_access_key_raw_unaffected_by_group_fix(scanner):
+    # Sanity check the fix is a no-op for patterns with no separate label —
+    # group(1) and group(0) were already identical there. Built via
+    # concatenation so this doesn't itself trip a --min-confidence-gated
+    # commit of this file.
+    key = "AKIA" + "IOSFODNN7EXAMPLE"
+    r = scanner.scan(key, secrets_only=True)
+    f = next(x for x in r.critical if x.type == "aws_access_key")
+    assert f.raw == key
 
 
 # ── sensitive_keyword skipped in secrets_only mode ──────────────────────────

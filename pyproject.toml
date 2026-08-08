@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dlp-patterns"
-version = "0.3.0"
+version = "0.4.0"
 description = "Fast, zero-dependency DLP pattern scanner — detects PII, secrets, and sensitive data in text"
 readme = "README.md"
 license = { text = "Apache-2.0" }

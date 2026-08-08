@@ -258,16 +258,32 @@ because it makes real network requests using the extracted secret value.
 
 **What's checked:** GitHub PATs, Slack tokens, Stripe (secret/restricted)
 keys, SendGrid, HuggingFace, npm, Google API keys, Telegram bot tokens,
-Mailgun, and Cloudflare API tokens.
+Mailgun, and Cloudflare API tokens — plus two *paired* credential types:
+
+- **AWS access/secret keys** — an access key ID alone can't authenticate
+  anything; it needs its secret key signed alongside it. `--verify` finds
+  an `aws_access_key` and `aws_secret_key` near each other in the same file
+  (within ~2000 characters — comfortably a few lines of a config/env file)
+  and verifies the pair with a single [AWS Signature Version 4][sigv4]
+  -signed call to STS `GetCallerIdentity` — implemented with stdlib
+  `hmac`/`hashlib`, no `boto3` dependency. Temporary (`ASIA`-prefixed)
+  credentials additionally look for a paired `aws_session_token` nearby;
+  without one, signing would fail even for a genuinely live credential, so
+  it's reported `unverifiable` rather than a wrong `invalid`.
+- **Twilio Account SID + Auth Token** — paired the same way, verified with
+  a Basic-auth `GET` against the account's own Twilio API endpoint.
+
+[sigv4]: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_sigv-signing.html
+
+An access key (or SID/token) with no partner found nearby is reported
+`unverifiable`, not silently skipped — pairing never guesses across file or
+commit boundaries (an access key in one file is never checked against a
+secret key from another).
 
 **What's deliberately *not* checked, and why:**
 - **Slack/Discord webhook URLs** — "verifying" a webhook means POSTing to
   it, which sends a real message to someone's channel. That's a side
   effect, not a check, so it's never attempted.
-- **AWS access/secret keys, Twilio SID/auth token** — verifying these needs
-  two independently-matched findings paired together (an access key *and*
-  its secret; an account SID *and* its auth token), which this scanner
-  doesn't yet correlate. Reported as `unverifiable` rather than guessed.
 - A network error (timeout, DNS failure) is always reported as `error`,
   never collapsed into `invalid` — not knowing is not the same as revoked.
 
