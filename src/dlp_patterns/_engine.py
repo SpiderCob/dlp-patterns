@@ -267,7 +267,14 @@ class Scanner:
             description="Google API Key",
         )
         p["bearer_token"] = dict(
-            pattern=r'\bBearer\s+([a-zA-Z0-9\-._~+/]+=*)\b', severity="CRITICAL",
+            # {20,} (not the old unbounded +) keeps the *whole* match — "Bearer "
+            # plus the captured token — comfortably above _MIN_ENTROPY_LEN, so
+            # short matches can no longer slip past entropy gating entirely.
+            # Without this, case-insensitive "bearer" plus any short run of
+            # word characters (English prose like "a bearer token grant", or a
+            # doc/test fixture like "Bearer test-token") matched and reported
+            # CRITICAL unconditionally.
+            pattern=r'\bBearer\s+([a-zA-Z0-9\-._~+/]{20,}=*)\b', severity="CRITICAL",
             description="Bearer Token",
         )
         p["jwt_token"] = dict(
@@ -632,19 +639,30 @@ class Scanner:
                 sev = info["severity"]
                 buckets.setdefault(sev, []).append(finding)
 
-        # Sensitive keyword scan
-        for sev, keywords in self._sensitive_keywords.items():
-            for kw in keywords:
-                if re.search(r'\b' + re.escape(kw) + r'\b', text, re.IGNORECASE):
-                    buckets[sev].append(Finding(
-                        type="sensitive_keyword",
-                        description="Sensitive Keyword",
-                        value=kw,
-                        position="multiple",
-                        severity=sev,
-                        context="",
-                        context_score=0.5,
-                    ))
+        # Sensitive keyword scan — bare English words ("password", "token",
+        # "confidential", ...) with no co-occurrence or entropy requirement.
+        # Meant for flagging compliance-relevant *documents* (an HR file
+        # containing "confidential" or "do not share"). It has no business
+        # running in secrets_only mode: on any real auth/security codebase,
+        # words like "token"/"secret"/"authorization" appear constantly and
+        # legitimately, and secrets_only's whole point is "just check for
+        # credential values" — this pass finds neither a credential nor PII,
+        # just vocabulary, so it's pure noise there (worse, several of these
+        # are CRITICAL severity, e.g. "private key"/"root password", so they
+        # were contributing to secrets_only's exit code too).
+        if not secrets_only:
+            for sev, keywords in self._sensitive_keywords.items():
+                for kw in keywords:
+                    if re.search(r'\b' + re.escape(kw) + r'\b', text, re.IGNORECASE):
+                        buckets[sev].append(Finding(
+                            type="sensitive_keyword",
+                            description="Sensitive Keyword",
+                            value=kw,
+                            position="multiple",
+                            severity=sev,
+                            context="",
+                            context_score=0.5,
+                        ))
 
         elapsed = (time.monotonic() - t0) * 1000
         return ScanResult(

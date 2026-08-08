@@ -119,6 +119,34 @@ dlp-scan --secrets-only src/config.py
 
 # Exit code: 1 if CRITICAL findings, 0 otherwise — useful in CI
 dlp-scan --secrets-only . && echo "clean"
+
+# Only fail the exit code for high-confidence findings (context_score >= 0.5) —
+# reduces false-positive CI failures from doc/test fixtures without hiding them
+# from the output. Findings are always reported regardless of this flag.
+dlp-scan --secrets-only --min-confidence 0.5 .
+```
+
+#### Exit code and `--min-confidence`
+
+By default, exit code `1` means "at least one CRITICAL finding" — full
+stop, regardless of how confident the match is. The engine already
+computes a `context_score` per finding (0.0-1.0: proximity to words like
+`production`/`deploy` raises it, proximity to `example`/`test`/`mock`/a
+code fence lowers it — see [Features](#features)), but by default the
+exit code ignores it entirely, same as it always has.
+
+`--min-confidence <float>` changes what the exit code reacts to: a
+CRITICAL finding only fails the build if its `context_score` is `>=` the
+given value. This matters most for scanning a codebase whose job
+description *includes* containing realistic-looking fake secrets — a
+secret-scanner's own test suite, security training data, a docs site with
+credential examples — where `--secrets-only` alone will always find
+something. Findings are still fully reported either way; the flag only
+changes what fails the build.
+
+```bash
+dlp-scan --secrets-only --min-confidence 0.5 src/     # a reasonable CI default
+dlp-scan --secrets-only --min-confidence 0.5 --history .   # combine with history scanning
 ```
 
 #### Directory scanning

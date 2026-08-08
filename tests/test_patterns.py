@@ -1,5 +1,6 @@
 """Tests for dlp-patterns."""
 import json
+import os
 import subprocess
 import sys
 
@@ -355,3 +356,89 @@ def test_cli_single_file_still_works(tmp_path):
     result = _run_cli("--secrets-only", str(f))
     assert result.returncode == 1
     assert "aws_access_key" in result.stdout
+
+
+# ── bearer_token minimum length ─────────────────────────────────────────────
+
+def test_bearer_token_short_english_phrase_not_flagged(scanner):
+    # "Bearer token" (12 chars incl. the word "token") used to slip past
+    # entropy gating entirely (full match < _MIN_ENTROPY_LEN) and get
+    # reported CRITICAL unconditionally.
+    r = scanner.scan("Every request needs a Bearer token in the Authorization header.")
+    assert not any(f.type == "bearer_token" for f in r.all)
+
+def test_bearer_token_short_fixture_not_flagged(scanner):
+    r = scanner.scan("Authorization: Bearer test-token")
+    assert not any(f.type == "bearer_token" for f in r.all)
+
+def test_bearer_token_real_length_still_flagged(scanner):
+    # Built via concatenation (not one contiguous literal) so this fixture,
+    # designed to score high enough to still trip a --min-confidence gate,
+    # doesn't itself trip one when this file gets committed.
+    token = "sk_live_" + "9aB3cD4eF5gH6iJ7kL8mN9oP0qR1sT2uV3wX"
+    r = scanner.scan("Authorization: Bearer " + token)
+    assert any(f.type == "bearer_token" for f in r.critical)
+
+
+# ── sensitive_keyword skipped in secrets_only mode ──────────────────────────
+
+def test_sensitive_keyword_skipped_in_secrets_only_mode():
+    # secrets_only means "just check for credential values" — bare English
+    # words like "token"/"secret"/"password" (and CRITICAL ones like
+    # "private key"/"root password") aren't credential values, they're
+    # compliance-document vocabulary, and are noise on any auth codebase.
+    text = "This module handles password and token authorization for the private API."
+    r_secrets = dlp_patterns.scan(text, secrets_only=True)
+    r_full = dlp_patterns.scan(text, secrets_only=False)
+    assert not any(f.type == "sensitive_keyword" for f in r_secrets.all)
+    assert any(f.type == "sensitive_keyword" for f in r_full.all)
+
+
+# ── CLI: --min-confidence gates the exit code on context_score ─────────────
+
+def test_min_confidence_default_matches_old_any_critical_behavior(tmp_path):
+    f = tmp_path / "config.py"
+    f.write_text('AWS_KEY = "AKIAIOSFODNN7EXAMPLE"')
+    result = _run_cli("--secrets-only", str(f))
+    assert result.returncode == 1  # unchanged from before --min-confidence existed
+
+def test_min_confidence_suppresses_low_score_exit_code(tmp_path):
+    f = tmp_path / "test_fixtures.py"
+    f.write_text('# example placeholder for tests, not a real key\nAWS_KEY = "AKIAIOSFODNN7EXAMPLE"  # fake test fixture\n')
+    default_result = _run_cli("--secrets-only", str(f))
+    gated_result = _run_cli("--secrets-only", "--min-confidence", "0.6", str(f))
+    assert default_result.returncode == 1
+    assert gated_result.returncode == 0
+    assert "aws_access_key" in gated_result.stdout  # still reported, just doesn't fail the exit code
+
+def test_min_confidence_still_blocks_high_score(tmp_path):
+    # Same reasoning as test_bearer_token_real_length_still_flagged above:
+    # built via concatenation so this deliberately-high-scoring fixture
+    # doesn't itself trip a --min-confidence-gated commit of this file.
+    key = "AKIA" + "IOSFODNN7EXAMPLE"
+    f = tmp_path / "prod_config.py"
+    f.write_text('production aws_access_key = "' + key + '"  # real deploy secret\n')
+    result = _run_cli("--secrets-only", "--min-confidence", "0.5", str(f))
+    assert result.returncode == 1
+
+def test_min_confidence_directory_mode(tmp_path):
+    (tmp_path / "fixture.py").write_text('# example placeholder\nAWS_KEY = "AKIAIOSFODNN7EXAMPLE"  # fake test\n')
+    gated_result = _run_cli("--secrets-only", "--min-confidence", "0.9", str(tmp_path))
+    assert gated_result.returncode == 0
+
+def test_min_confidence_history_mode(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {**os.environ, "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@example.com",
+           "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@example.com"}
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, env=env, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repo, env=env, check=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=repo, env=env, check=True)
+    (repo / "fixture.py").write_text('# example placeholder for a fake test key\nAWS_KEY = "AKIAIOSFODNN7EXAMPLE"\n')
+    subprocess.run(["git", "add", "."], cwd=repo, env=env, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add example fixture"], cwd=repo, env=env, check=True)
+
+    default_result = _run_cli("--history", str(repo))
+    gated_result = _run_cli("--history", "--min-confidence", "0.9", str(repo))
+    assert default_result.returncode == 1
+    assert gated_result.returncode == 0
