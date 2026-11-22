@@ -1,5 +1,7 @@
 # dlp-patterns
 
+> Part of **[Spidercob](https://github.com/SpiderCob/spidercob-gateway)**, open-source guardrails for AI agents.
+
 **Fast, zero-dependency DLP pattern scanner for Python.**
 
 Detects PII, secrets, and sensitive data in any text — documents, logs, source code, emails. Built from the scanning engine that powers [Spidercob](https://spidercob.com), an enterprise DLP platform.
