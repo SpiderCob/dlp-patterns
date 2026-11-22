@@ -240,6 +240,18 @@ class Scanner:
         p["aws_secret_key"] = dict(
             pattern=r'\b[A-Za-z0-9/+=]{40}\b', severity="CRITICAL",
             description="AWS Secret Access Key",
+            # A bare 40-char base64-ish token matches far too much — git commit
+            # SHAs, content hashes, minified-JS fragments — and on a public-repo
+            # scan this one rule produced ~99% of all secret hits (28,120 of
+            # 28,417 in the Nov-2026 MCP pilot), virtually all false positives.
+            # An AWS secret key is only a credential next to its access-key id
+            # or an explicit AWS/secret label (`aws_secret_access_key = …`),
+            # which always put one of these keywords inside the ±100-char
+            # context window; requiring one drops the noise without missing a
+            # real, labelled key.
+            context_keywords=["aws", "secret", "access_key", "credentials",
+                              "boto", "amazon", "s3"],
+            requires_context_keywords=True,
         )
         p["aws_session_token"] = dict(
             pattern=r'\b(FQoGZXRfYXJj[a-zA-Z0-9/+=]{20,})\b', severity="HIGH",
@@ -374,6 +386,13 @@ class Scanner:
             description="Cloudflare API Token",
             context_keywords=["cloudflare", "cf_token", "x-auth-key", "x-auth-email"],
             requires_context_keywords=True,
+            # The {40} alternative also matches a 40-char git SHA / SHA-1 hash,
+            # and the context gate alone doesn't save us: a repo that deploys to
+            # Cloudflare mentions "cloudflare" all over, so a nearby commit SHA
+            # passes. Real CF API tokens are mixed-case base62url and are never
+            # all-lowercase/all-uppercase hex, so reject a pure-hex 40-char
+            # match outright (the cf_-prefixed alternative is unaffected).
+            validator=self._validate_cloudflare_token,
         )
         p["azure_sas_token"] = dict(
             pattern=r'\b(?:SharedAccessSignature|sig=[a-zA-Z0-9%+/]{20,}[&;])',
@@ -467,6 +486,15 @@ class Scanner:
             return isinstance(header, dict) and ('alg' in header or 'typ' in header)
         except Exception:
             return False
+
+    def _validate_cloudflare_token(self, token: str) -> bool:
+        # The cf_-prefixed form is always a real token; keep it. For the bare
+        # 40-char form, reject an all-hex string (git SHA / SHA-1 digest), which
+        # is the dominant false positive. A genuine Cloudflare API token mixes
+        # letters and digits and is not confined to hex.
+        if token.startswith("cf_"):
+            return True
+        return re.fullmatch(r'[0-9a-fA-F]{40}', token) is None
 
     # ── Entropy helpers ───────────────────────────────────────────────────────
 
