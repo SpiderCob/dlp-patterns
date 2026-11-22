@@ -482,3 +482,36 @@ def test_min_confidence_history_mode(tmp_path):
     gated_result = _run_cli("--history", "--min-confidence", "0.9", str(repo))
     assert default_result.returncode == 1
     assert gated_result.returncode == 0
+
+
+# ── aws_secret_key / cloudflare FP reduction (MCP pilot, Nov 2026) ─────────────
+
+def _secret_types(scanner, text):
+    r = scanner.scan(text, secrets_only=True)
+    return {f.type for f in r.critical + r.high}
+
+def test_aws_secret_key_requires_aws_context(scanner):
+    # A bare 40-char git SHA / base64 blob with no AWS context must NOT flag:
+    # this one rule produced ~99% of all hits (28,120/28,417) on the public
+    # MCP-server pilot, almost all false positives.
+    assert "aws_secret_key" not in _secret_types(
+        scanner, "checksum = Zm9vYmFyMTIzNDU2Nzg5MGFiY2RlZmdoaWprbG0=")
+    assert "aws_secret_key" not in _secret_types(
+        scanner, "source_ref: 1a2b3c4d5e6f7890abcdef1234567890abcdef12")
+
+def test_aws_secret_key_still_flags_labelled_pair(scanner):
+    t = ("aws_access_key_id = AKIAIOSFODNN7EXAMPLE\n"
+         "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+    types = _secret_types(scanner, t)
+    assert "aws_access_key" in types and "aws_secret_key" in types
+
+def test_cloudflare_rejects_hex_git_sha(scanner):
+    # 40-char all-hex is a git SHA / SHA-1 digest, not a CF token, even when
+    # "cloudflare" appears nearby (e.g. a Workers deploy workflow).
+    assert "cloudflare_api_token" not in _secret_types(
+        scanner, "deploy to cloudflare workers\nref: 1a2b3c4d5e6f7890abcdef1234567890abcdef12")
+
+def test_cloudflare_still_flags_real_token(scanner):
+    # A genuine mixed-case 40-char token with context must still flag.
+    assert "cloudflare_api_token" in _secret_types(
+        scanner, "cloudflare x-auth-key: aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5bC7d")
